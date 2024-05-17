@@ -1,0 +1,69 @@
+What is it?
+A rest service which mimic `tail -n` command
+
+Tech stack
+Written in minimalistic Java with no external dependencies
+
+Architectural debrief
+Conceptually it creates and maintains file offsets (positions) for last 1024 lines of each file.
+Q: Why?
+A: To have fast positional reads (fast track) for large files. Such indexing adds at most 8Kb memory overhead per file.
+If service is queried for more than 1024 last lines, it reads whole file (slow read path)
+This should be seen as trade-off between file access speed and memory consumption.
+It is expected that high percentage of service's users will request less than 1024 last lines.
+
+Component wise, the service consists of:
+1. Server - simple http connector, which does basic request validation and invokes positional file reads
+2. Discovery - dynamically watch logs folder for new files, updates or deletes.
+    In case of noted events (we mean here tail writes) it calls Indexer
+3. Indexer - maintains position index per file, performing asynchronous indexing
+3. FileReader - does positional file reads
+
+Threading model:
+Http server uses elastic thread pool which can grow/shrink with the load.
+Since file reading happens on the same request thread, it is expected that service thread
+will be blocked on IO most the time. Here fast reads helps to reduce blocking time.
+Nio event-loop could help even better, but java platform does not provide it out of the box.
+
+How to build:
+Run `.\gradlew jar`
+
+How to run:
+java -Dlogs_dir="C:/Users/vkras/var/log" -cp .\build\libs\logster-0.0.1.jar com.logster.Main
+
+How to use:
+Service exposes two APIs
+1. /list (http://localhost:8000/list) - to see all tracked files in `logs` directory
+2. /tail (http://localhost:8000/tail?log=lines_10000000.txt&n=5) - to fetch last `n` lines from `log` file
+
+Testing:
+Generated lots of testing files using the py script. Verified on 1GB file.
+```
+import sys
+import string
+import random
+
+lines = int(sys.argv[1])
+N = 80
+for i in range(0, lines):
+    s = ''.join(random.choices(string.ascii_uppercase + string.digits, k=N))
+    print(f"{i} {s}")
+```
+
+Sample output:
+```
+python .\gen_files.py 10
+0 JE6FVTIFYX5LOCC97U47SZK3D86393MG80OUE6M7BAWN7P6AZSI0VKDJLDM4CZEFBT2BACYFLBDL9FJL
+1 05A2R54X4XZ1ESKZ8CDGJG0IGTNR14FJ4P2JXVLBZGIH464RZ89ZBLQMHWFDI63F39UIBOD7FA4WM3EP
+2 FF3UR2JZU23UY4P0EQMN7LXCGLEIXZTSI5P150W1AAUGHDM09XQQ6GY78DBAT44YFS1G71ZN66LIEVOG
+3 XOSDS9IO7PG501VCOB6II12WRFRSDZ4ZXP13FZCMYYP6WHBCQJULCWCJHYYGQ90G3ZPP6UPTL27VEW5P
+4 PWPL64PS6YU3F9QJ1SDPFFZILJRIKFNSB00N484AE52D86EFPJKXYQ5B9498DYP3TU5ZPK12AL0F9SWW
+5 O4BUHVDBO80Q7ECGHU4N1JHNVHZZ07EFI5B9ZBORSZMF6QBZQ5DXAW7BHPGSTK69I4NFGLSPBYGWNXKM
+6 YBR6VMWZZ2VP2D3DEV0EJDYELHPYSFIC2Q0P4STRK9EWX10P95N0TOVTQ6IUAOYC4KVBO5QSU8UXAE2L
+7 9X53P145ULBWVEZPSPYIUX5HYOSFF2GEYMLT7K8C1TUMYWBX0JIAEYDARA3OORQAN9668T3NJ1YUTZAP
+8 99MZLYACGDPCXQB6E1N389RJ91G87Q8056NCAGWUIFJ7XRVJ5BK3DCQELKPIXMXFRWDCYBMPOL1RTDEK
+9 D47KXX1QNQTN8PFARYKTS8AVCKIL5DL09MAS0GX3W2HTKOE1723FLE1ISNAU0UWIEKTWCK7RJFBH0PBN
+```
+
+Note: this service cuts corners and does not deal with various things like file encodings.
+It is expecting file contains just ascii symbols and be encoded in uft-8
